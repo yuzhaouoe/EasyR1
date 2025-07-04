@@ -216,7 +216,8 @@ class DataParallelPPOActor(BasePPOActor):
         self.actor_module.train()
 
         temperature = data.meta_info["temperature"]  # temperature must be in the data.meta_info to avoid slient error
-        select_keys = ["responses", "input_ids", "attention_mask", "position_ids"]
+        # select_keys = ["responses", "input_ids", "attention_mask", "position_ids"]
+        select_keys = ["response_mask", "input_ids", "attention_mask", "position_ids"]
         select_keys.extend(["old_log_probs", "ref_log_probs", "advantages"])
         non_tensor_select_keys = ["multi_modal_inputs"]
 
@@ -239,10 +240,11 @@ class DataParallelPPOActor(BasePPOActor):
 
                 for micro_batch in micro_batches:
                     model_inputs = {**micro_batch.batch, **micro_batch.non_tensor_batch}
-                    responses = model_inputs["responses"]
-                    response_length = responses.size(1)
+                    # responses = model_inputs["responses"]
+                    # response_length = responses.size(1)
                     attention_mask = model_inputs["attention_mask"]
-                    response_mask = attention_mask[:, -response_length:]
+                    # response_mask = attention_mask[:, -response_length:]
+                    response_mask = model_inputs["response_mask"]
                     old_log_probs = model_inputs["old_log_probs"]
                     advantages = model_inputs["advantages"]
 
