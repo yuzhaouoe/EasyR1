@@ -133,3 +133,21 @@ class BatchFunctionRewardManager(FunctionRewardManager):
                 reward_metrics[key].append(value)
 
         return reward_tensor, reward_metrics
+
+
+class StateBatchFunctionRewardManager(FunctionRewardManager):
+    reward_fn: BatchRewardFunction
+    from cursor.cursor_env import State
+
+    def compute_reward(self, states: List[State]) -> Tuple[torch.Tensor, Dict[str, List[float]]]:
+        scores = self.reward_fn(states)
+        overall_reward_tensor = []
+        # reward_tensor = torch.zeros_like(data.batch["responses"], dtype=torch.float32)
+        reward_metrics = defaultdict(list)
+        for i, score in enumerate(scores):
+            # reward_tensor[i, response_length[i] - 1] = score["overall"]
+            for key, value in score.items():
+                reward_metrics[key].append(value)
+            overall_reward_tensor.append(score["overall"])
+        overall_reward_tensor = torch.tensor(overall_reward_tensor, dtype=torch.float32).unsqueeze(1)
+        return overall_reward_tensor, reward_metrics

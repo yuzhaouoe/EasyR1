@@ -494,18 +494,18 @@ class FSDPWorker(Worker):
         data = data.to(torch.cuda.current_device())
 
         if self._use_param_offload:
-            load_fsdp_model(self.fsdp_module)
+            load_fsdp_model(self.fsdp_module) # load new model?
 
         if self._use_optimizer_offload:
-            load_fsdp_optimizer(optimizer=self.optimizer)
+            load_fsdp_optimizer(optimizer=self.optimizer) # load optimiser
 
         with self.ulysses_sharding_manager:
             data = self.ulysses_sharding_manager.preprocess_data(data=data)
             with Timer(name="update_policy", logger=None) as timer:
-                metrics = self.actor.update_policy(data=data)
+                metrics = self.actor.update_policy(data=data) # update policy
 
             delta_time = timer.last
-            global_num_tokens = data.meta_info["global_token_num"]
+            global_num_tokens = data.meta_info["global_token_num"] # TODO 
             estimated_flops, promised_flops = self.flops_counter.estimate_flops(global_num_tokens, delta_time)
             metrics["perf/mfu_actor"] = (
                 estimated_flops * self.config.actor.ppo_epochs / (promised_flops * self.world_size)
@@ -560,6 +560,7 @@ class FSDPWorker(Worker):
         }
         prompts.meta_info.update(meta_info)
 
+        print("do we need sharding manager when there is no tensor?")
         prompts = self.rollout_sharding_manager.preprocess_data(prompts)
         output = self.rollout.generate_sequences(prompts=prompts)
         output = self.rollout_sharding_manager.postprocess_data(output)
@@ -568,14 +569,14 @@ class FSDPWorker(Worker):
         return output
 
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
-    def compute_log_probs(self, data: DataProto):
+    def compute_log_probs(self, data: DataProto): # compute old prob enters
         assert self._has_actor
 
         self._process_multi_modal_inputs(data)
         data = data.to(torch.cuda.current_device())
 
         if self._use_param_offload:
-            load_fsdp_model(self.fsdp_module)
+            load_fsdp_model(self.fsdp_module) # load old model?
 
         # we should always recompute old_log_probs when it is HybridEngine
         data.meta_info["temperature"] = self.config.rollout.temperature

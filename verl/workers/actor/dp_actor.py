@@ -71,8 +71,9 @@ class DataParallelPPOActor(BasePPOActor):
         batch_size, seqlen = input_ids.shape
         attention_mask = micro_batch["attention_mask"]
         position_ids = micro_batch["position_ids"]
-        responses = micro_batch["responses"]
-        response_length = responses.size(-1)
+        # responses = micro_batch["responses"]
+        # response_length = responses.size(-1)
+        response_mask = micro_batch["response_mask"]
         if position_ids.dim() == 3:  # qwen2vl mrope
             position_ids = position_ids.transpose(0, 1)  # (bsz, 3, seqlen) -> (3, bsz, seqlen)
 
@@ -142,7 +143,11 @@ class DataParallelPPOActor(BasePPOActor):
             full_log_probs = pad_input(
                 hidden_states=log_probs.unsqueeze(-1), indices=indices, batch=batch_size, seqlen=seqlen
             )
-            log_probs = full_log_probs.squeeze(-1)[:, -response_length - 1 : -1]  # (bsz, response_length)
+            # log_probs = full_log_probs.squeeze(-1)[:, -response_length - 1 : -1]  # (bsz, response_length)
+            
+            response_mask = torch.roll(response_mask, shifts=-1, dims=1)
+            log_probs = full_log_probs.squeeze(-1)[response_mask.bool()]  # (bsz, all_responses_length)
+        
         else:
             output = self.actor_module(
                 input_ids=input_ids,
@@ -153,8 +158,12 @@ class DataParallelPPOActor(BasePPOActor):
             )
             logits: torch.Tensor = output.logits
             logits.div_(temperature)
-            logits = logits[:, -response_length - 1 : -1, :]  # (bsz, response_length, vocab_size)
-            log_probs = self.log_probs_from_logits(logits, responses)  # (bsz, response_length)
+            # logits = logits[:, -response_length - 1 : -1, :]  # (bsz, response_length, vocab_size)
+            # log_probs = self.log_probs_from_logits(logits, responses)  # (bsz, response_length)
+            labels = torch.roll(input_ids, shifts=-1, dims=1)  # (bsz, seqlen)
+            log_probs = self.log_probs_from_logits(logits=logits, labels=labels)
+            response_mask = torch.roll(response_mask, shifts=-1, dims=1)  # (bsz, seqlen)
+            log_probs = log_probs[response_mask.bool()]  # (bsz, all_responses_length)
 
         return log_probs
 
@@ -173,7 +182,7 @@ class DataParallelPPOActor(BasePPOActor):
         return grad_norm
 
     @torch.no_grad()
-    def compute_log_prob(self, data: DataProto) -> torch.Tensor:
+    def compute_log_prob(self, data: DataProto) -> torch.Tensor: # old log prob enters
         """Compute the log probability of the responses given input_ids, attention_mask and position_ids
 
         Args:
@@ -194,7 +203,8 @@ class DataParallelPPOActor(BasePPOActor):
         self.actor_module.eval()
 
         temperature = data.meta_info["temperature"]
-        select_keys = ["responses", "input_ids", "attention_mask", "position_ids"]
+        # select_keys = ["responses", "input_ids", "attention_mask", "position_ids"]
+        select_keys = ["response_mask", "input_ids", "attention_mask", "position_ids"]
         non_tensor_select_keys = ["multi_modal_inputs"]
 
         micro_batches = data.select(select_keys, non_tensor_select_keys).split(
@@ -213,7 +223,7 @@ class DataParallelPPOActor(BasePPOActor):
         return log_probs
 
     def update_policy(self, data: DataProto) -> Dict[str, Any]:
-        self.actor_module.train()
+        self.actor_module.train() # set to train
 
         temperature = data.meta_info["temperature"]  # temperature must be in the data.meta_info to avoid slient error
         # select_keys = ["responses", "input_ids", "attention_mask", "position_ids"]
