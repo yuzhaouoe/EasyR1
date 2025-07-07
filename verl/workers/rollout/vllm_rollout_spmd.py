@@ -96,7 +96,7 @@ class vLLMRollout(BaseRollout):
         if config.tensor_parallel_size > torch.distributed.get_world_size():
             raise ValueError("Tensor parallelism size should be less than world size.")
 
-        if config.max_num_batched_tokens < config.prompt_length + config.response_length:
+        if config.max_num_batched_tokens < (config.max_model_len or config.prompt_length + config.response_length):
             raise ValueError("max_num_batched_tokens should be greater than prompt_length + response_length.")
 
         engine_kwargs = {}
@@ -122,6 +122,7 @@ class vLLMRollout(BaseRollout):
             disable_custom_all_reduce=True,
             enable_chunked_prefill=config.enable_chunked_prefill,
             enable_sleep_mode=True,
+            enable_prefix_caching=True,
             **engine_kwargs,
         )
 
@@ -130,7 +131,7 @@ class vLLMRollout(BaseRollout):
 
         sampling_kwargs = {
             "max_tokens": config.response_length,
-            "detokenize": False,
+            "detokenize": True,
             "logit_bias": _get_logit_bias(processor),
         }
         default_sampling_params = SamplingParams()
@@ -168,7 +169,7 @@ class vLLMRollout(BaseRollout):
 
         non_tensor_batch = prompts.non_tensor_batch
         batch_raw_prompt_ids = non_tensor_batch.pop("raw_prompt_ids")
-        batch_multi_modal_data = non_tensor_batch.pop("multi_modal_data", None)
+        batch_multi_modal_data = non_tensor_batch.pop("multi_modal_data")
         
         # batch_size = len(batch_raw_prompt_ids)
         # if batch_size != len(batch_raw_prompt_ids):
@@ -196,17 +197,17 @@ class vLLMRollout(BaseRollout):
             completions: List[RequestOutput] = self.inference_engine.generate(
                 prompts=vllm_inputs, sampling_params=self.sampling_params, use_tqdm=self.use_tqdm
             )
-            print("vllm inputs check")
-            print(completions[0].prompt_token_ids)
-            print("vllm inputs check end")
+            # print("vllm inputs check")
+            # print(completions[0].prompt_token_ids)
+            # print("vllm inputs check end")
             responses_text = [output.text for completion in completions for output in completion.outputs]
             # response_ids = [output.token_ids for completion in completions for output in completion.outputs]
             # response_ids = VF.pad_2d_list_to_length(
             #     response_ids, self.pad_token_id, max_length=self.config.response_length
             # ).to(input_ids.device)
 
-            if self.sampling_params.n > 1:
-                batch_size = batch_size * self.sampling_params.n
+            # if self.sampling_params.n > 1:
+            #     batch_size = batch_size * self.sampling_params.n
                 # input_ids = _repeat_interleave(input_ids, self.sampling_params.n)
                 # attention_mask = _repeat_interleave(attention_mask, self.sampling_params.n)
                 # position_ids = _repeat_interleave(position_ids, self.sampling_params.n)

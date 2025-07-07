@@ -31,15 +31,22 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = False) -> Dict[str
     advantages = batch.batch["advantages"]
     returns = batch.batch["returns"]
 
-    max_response_length = batch.batch["responses"].size(-1)
+    response_mask = batch.batch["response_mask"]
+    attention_mask = batch.batch["attention_mask"]
 
-    prompt_mask = batch.batch["attention_mask"][:, :-max_response_length].bool()
-    response_mask = batch.batch["attention_mask"][:, -max_response_length:].bool()
+    # max_response_length = batch.batch["responses"].size(-1)
 
-    max_prompt_length = prompt_mask.size(-1)
-    prompt_length = prompt_mask.sum(-1).float()
-    response_length = response_mask.sum(-1).float()
+    # prompt_mask = batch.batch["attention_mask"][:, :-max_response_length].bool()
+    # response_mask = batch.batch["attention_mask"][:, -max_response_length:].bool()
+    # breakpoint()
+    num_tokens_in_sequence = attention_mask.sum(-1).float()
+    num_response_tokens_in_sequence = response_mask.sum(-1).float()
 
+    # max_prompt_length = prompt_mask.size(-1)
+    # prompt_length = prompt_mask.sum(-1).float()
+    # response_length = response_mask.sum(-1).float()
+
+    response_mask = response_mask.bool()
     valid_adv = torch.masked_select(advantages, response_mask)
     valid_returns = torch.masked_select(returns, response_mask)
 
@@ -79,17 +86,23 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = False) -> Dict[str
             else {}
         ),
         # response length
-        "response_length/mean": torch.mean(response_length).detach().item(),
-        "response_length/max": torch.max(response_length).detach().item(),
-        "response_length/min": torch.min(response_length).detach().item(),
-        "response_length/clip_ratio": torch.mean(torch.eq(response_length, max_response_length).float())
-        .detach()
-        .item(),
+        # "response_length/mean": torch.mean(response_length).detach().item(),
+        # "response_length/max": torch.max(response_length).detach().item(),
+        # "response_length/min": torch.min(response_length).detach().item(),
+        # "response_length/clip_ratio": torch.mean(torch.eq(response_length, max_response_length).float())
+        # .detach()
+        # .item(),
         # prompt length
-        "prompt_length/mean": torch.mean(prompt_length).detach().item(),
-        "prompt_length/max": torch.max(prompt_length).detach().item(),
-        "prompt_length/min": torch.min(prompt_length).detach().item(),
-        "prompt_length/clip_ratio": torch.mean(torch.eq(prompt_length, max_prompt_length).float()).detach().item(),
+        # "prompt_length/mean": torch.mean(prompt_length).detach().item(),
+        # "prompt_length/max": torch.max(prompt_length).detach().item(),
+        # "prompt_length/min": torch.min(prompt_length).detach().item(),
+        # "prompt_length/clip_ratio": torch.mean(torch.eq(prompt_length, max_prompt_length).float()).detach().item(),
+        "num_tokens_in_sequence/mean": torch.mean(num_tokens_in_sequence).detach().item(),
+        "num_tokens_in_sequence/max": torch.max(num_tokens_in_sequence).detach().item(),
+        "num_tokens_in_sequence/min": torch.min(num_tokens_in_sequence).detach().item(),
+        "num_response_tokens_in_sequence/mean": torch.mean(num_response_tokens_in_sequence).detach().item(),
+        "num_response_tokens_in_sequence/max": torch.max(num_response_tokens_in_sequence).detach().item(),
+        "num_response_tokens_in_sequence/min": torch.min(num_response_tokens_in_sequence).detach().item(),
     }
     return metrics
 

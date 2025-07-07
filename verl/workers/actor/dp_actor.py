@@ -73,7 +73,7 @@ class DataParallelPPOActor(BasePPOActor):
         position_ids = micro_batch["position_ids"]
         # responses = micro_batch["responses"]
         # response_length = responses.size(-1)
-        response_mask = micro_batch["response_mask"]
+        response_mask = micro_batch["response_mask"] # TODO, select the responses' tokens at here
         if position_ids.dim() == 3:  # qwen2vl mrope
             position_ids = position_ids.transpose(0, 1)  # (bsz, 3, seqlen) -> (3, bsz, seqlen)
 
@@ -145,9 +145,10 @@ class DataParallelPPOActor(BasePPOActor):
             )
             # log_probs = full_log_probs.squeeze(-1)[:, -response_length - 1 : -1]  # (bsz, response_length)
             
-            response_mask = torch.roll(response_mask, shifts=-1, dims=1)
-            log_probs = full_log_probs.squeeze(-1)[response_mask.bool()]  # (bsz, all_responses_length)
-        
+            # response_mask = torch.roll(response_mask, shifts=-1, dims=1)
+            log_probs = full_log_probs.squeeze(-1)
+            # [response_mask.bool()]  # (bsz, all_responses_length)
+            # always return full_log_probs
         else:
             output = self.actor_module(
                 input_ids=input_ids,
@@ -162,9 +163,14 @@ class DataParallelPPOActor(BasePPOActor):
             # log_probs = self.log_probs_from_logits(logits, responses)  # (bsz, response_length)
             labels = torch.roll(input_ids, shifts=-1, dims=1)  # (bsz, seqlen)
             log_probs = self.log_probs_from_logits(logits=logits, labels=labels)
-            response_mask = torch.roll(response_mask, shifts=-1, dims=1)  # (bsz, seqlen)
-            log_probs = log_probs[response_mask.bool()]  # (bsz, all_responses_length)
-
+            # response_mask = torch.roll(response_mask, shifts=-1, dims=1)  # (bsz, seqlen)
+            # log_probs = log_probs[response_mask.bool()]  # (bsz, all_responses_length)
+            # we can squeezed to one dimention all_response_length probs
+            # and use a cu_len to slice each response's log_probs
+        
+        response_mask = torch.roll(response_mask, shifts=-1, dims=1)
+        log_probs = log_probs * response_mask
+        
         return log_probs
 
     def _optimizer_step(self) -> torch.Tensor:
@@ -252,7 +258,7 @@ class DataParallelPPOActor(BasePPOActor):
                     model_inputs = {**micro_batch.batch, **micro_batch.non_tensor_batch}
                     # responses = model_inputs["responses"]
                     # response_length = responses.size(1)
-                    attention_mask = model_inputs["attention_mask"]
+                    # attention_mask = model_inputs["attention_mask"]
                     # response_mask = attention_mask[:, -response_length:]
                     response_mask = model_inputs["response_mask"]
                     old_log_probs = model_inputs["old_log_probs"]
