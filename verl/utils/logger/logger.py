@@ -62,8 +62,9 @@ class ConsoleLogger(Logger):
 
 class MlflowLogger(Logger):
     def __init__(self, config: Dict[str, Any]) -> None:
-        mlflow.start_run(run_name=config["trainer"]["experiment_name"])
-        mlflow.log_params(flatten_dict(config))
+        # mlflow.start_run(run_name=config["trainer"]["experiment_name"])
+        mlflow.autolog()
+        # mlflow.log_params(flatten_dict(config))
 
     def log(self, data: Dict[str, Any], step: int) -> None:
         mlflow.log_metrics(metrics=data, step=step)

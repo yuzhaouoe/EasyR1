@@ -31,7 +31,7 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = False) -> Dict[str
     advantages = batch.batch["advantages"]
     returns = batch.batch["returns"]
 
-    response_mask = batch.batch["response_mask"]
+    response_mask = batch.batch["compact_response_mask"]
     attention_mask = batch.batch["attention_mask"]
 
     # max_response_length = batch.batch["responses"].size(-1)

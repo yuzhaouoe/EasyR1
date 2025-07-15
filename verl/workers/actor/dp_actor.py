@@ -33,11 +33,22 @@ from ...utils.ulysses import gather_outputs_and_unpad, ulysses_pad_and_slice_inp
 from .base import BasePPOActor
 from .config import ActorConfig
 
+from torch.nn.utils.rnn import pad_sequence
 
 try:
     from flash_attn.bert_padding import index_first_axis, pad_input, rearrange, unpad_input
 except ImportError:
     pass
+
+import logging
+import time
+
+logging.basicConfig(
+    format="%(asctime)s - %(levelname)s %(name)s %(lineno)s: %(message)s",
+    datefmt="%m/%d/%Y %H:%M:%S",
+)
+logger = logging.getLogger(__name__)
+logger.setLevel(level=logging.DEBUG)
 
 
 __all__ = ["DataParallelPPOActor"]
@@ -62,6 +73,11 @@ class DataParallelPPOActor(BasePPOActor):
         else:
             self.log_probs_from_logits = VF.log_probs_from_logits
 
+    def _get_compact_response_log_probs(self, response_mask, log_probs, compact_response_mask) -> torch.Tensor:
+        compact_log_prob = torch.zeros(compact_response_mask.shape, dtype=log_probs.dtype, device=log_probs.device)
+        compact_log_prob[compact_response_mask] = log_probs[response_mask.bool()]
+        return compact_log_prob
+
     def _forward_micro_batch(self, micro_batch: Dict[str, torch.Tensor], temperature: float) -> torch.Tensor:
         """
         Returns:
@@ -73,7 +89,9 @@ class DataParallelPPOActor(BasePPOActor):
         position_ids = micro_batch["position_ids"]
         # responses = micro_batch["responses"]
         # response_length = responses.size(-1)
-        response_mask = micro_batch["response_mask"] # TODO, select the responses' tokens at here
+        response_mask = micro_batch["response_mask"]  # TODO, select the responses' tokens at here
+        compact_response_mask = micro_batch["compact_response_mask"]
+
         if position_ids.dim() == 3:  # qwen2vl mrope
             position_ids = position_ids.transpose(0, 1)  # (bsz, 3, seqlen) -> (3, bsz, seqlen)
 
@@ -144,7 +162,7 @@ class DataParallelPPOActor(BasePPOActor):
                 hidden_states=log_probs.unsqueeze(-1), indices=indices, batch=batch_size, seqlen=seqlen
             )
             # log_probs = full_log_probs.squeeze(-1)[:, -response_length - 1 : -1]  # (bsz, response_length)
-            
+
             # response_mask = torch.roll(response_mask, shifts=-1, dims=1)
             log_probs = full_log_probs.squeeze(-1)
             # [response_mask.bool()]  # (bsz, all_responses_length)
@@ -167,10 +185,10 @@ class DataParallelPPOActor(BasePPOActor):
             # log_probs = log_probs[response_mask.bool()]  # (bsz, all_responses_length)
             # we can squeezed to one dimention all_response_length probs
             # and use a cu_len to slice each response's log_probs
-        
-        response_mask = torch.roll(response_mask, shifts=-1, dims=1)
-        log_probs = log_probs * response_mask
-        
+
+        # response_mask = torch.roll(response_mask, shifts=-1, dims=1)
+        # log_probs = log_probs * response_mask
+        log_probs = self._get_compact_response_log_probs(response_mask, log_probs, compact_response_mask)
         return log_probs
 
     def _optimizer_step(self) -> torch.Tensor:
@@ -188,7 +206,7 @@ class DataParallelPPOActor(BasePPOActor):
         return grad_norm
 
     @torch.no_grad()
-    def compute_log_prob(self, data: DataProto) -> torch.Tensor: # old log prob enters
+    def compute_log_prob(self, data: DataProto) -> torch.Tensor:  # old log prob enters
         """Compute the log probability of the responses given input_ids, attention_mask and position_ids
 
         Args:
@@ -210,7 +228,7 @@ class DataParallelPPOActor(BasePPOActor):
 
         temperature = data.meta_info["temperature"]
         # select_keys = ["responses", "input_ids", "attention_mask", "position_ids"]
-        select_keys = ["response_mask", "input_ids", "attention_mask", "position_ids"]
+        select_keys = ["response_mask", "input_ids", "attention_mask", "position_ids", "compact_response_mask"]
         non_tensor_select_keys = ["multi_modal_inputs"]
 
         micro_batches = data.select(select_keys, non_tensor_select_keys).split(
@@ -218,7 +236,9 @@ class DataParallelPPOActor(BasePPOActor):
         )
         log_probs_lst = []
         if self.rank == 0:
-            micro_batches = tqdm(micro_batches, desc="Compute log probs", position=1)
+            # micro_batches = tqdm(micro_batches, desc="Compute log probs", position=1)
+            logger.info(f"RANK-0 Compute log probs, {len(micro_batches)} it")
+            start_time = time.perf_counter()
 
         for micro_batch in micro_batches:
             model_inputs = {**micro_batch.batch, **micro_batch.non_tensor_batch}
@@ -226,43 +246,52 @@ class DataParallelPPOActor(BasePPOActor):
             log_probs_lst.append(log_probs)
 
         log_probs = torch.concat(log_probs_lst, dim=0)
+
+        if self.rank == 0:
+            # micro_batches = tqdm(micro_batches, desc="Compute log probs", position=1)
+            end_time = time.perf_counter()
+            logger.info(
+                f"RANK-0 Compute {len(log_probs_lst)} log probs finished, {(end_time - start_time) / len(micro_batches):.2f} it/s"
+            )
+
         return log_probs
 
     def update_policy(self, data: DataProto) -> Dict[str, Any]:
-        self.actor_module.train() # set to train
+        self.actor_module.train()  # set to train
 
         temperature = data.meta_info["temperature"]  # temperature must be in the data.meta_info to avoid slient error
         # select_keys = ["responses", "input_ids", "attention_mask", "position_ids"]
-        select_keys = ["response_mask", "input_ids", "attention_mask", "position_ids"]
+        select_keys = ["response_mask", "input_ids", "attention_mask", "position_ids", "compact_response_mask"]
         select_keys.extend(["old_log_probs", "ref_log_probs", "advantages"])
         non_tensor_select_keys = ["multi_modal_inputs"]
 
-        # Split to make minibatch iterator for updating the actor
+        # Split to make mini_batch iterator for updating the actor
         # See PPO paper for details. https://arxiv.org/abs/1707.06347
         mini_batches = data.select(select_keys, non_tensor_select_keys).split(self.config.global_batch_size_per_device)
 
         metrics = defaultdict(list)
         for _ in range(self.config.ppo_epochs):
-            if self.rank == 0:
-                mini_batches = tqdm(mini_batches, desc="Train mini-batches", position=1)
-
-            for mini_batch in mini_batches:
+            # if self.rank == 0:
+            #     mini_batches = tqdm(mini_batches, desc="Train mini-batches", position=1)
+            for mini_batch_idx, mini_batch in enumerate(mini_batches):
+                if self.rank == 0:
+                    logger.info(f"RANK-0 Start training mini_batches [{mini_batch_idx + 1}/{len(mini_batches)}]")
+                    mini_batch_start_time = time.perf_counter()
                 gradient_accumulation = (
                     self.config.global_batch_size_per_device // self.config.micro_batch_size_per_device_for_update
                 )
                 micro_batches = mini_batch.split(self.config.micro_batch_size_per_device_for_update)
-                if self.rank == 0:
-                    micro_batches = tqdm(micro_batches, desc="Update policy", position=2)
-
-                for micro_batch in micro_batches:
+                # if self.rank == 0:
+                #     micro_batches = tqdm(micro_batches, desc="Update policy", position=2)
+                for micro_batch_idx, micro_batch in enumerate(micro_batches):
+                    if self.rank == 0:
+                        # logger.info(f"RANK-0 MiniBatch[{mini_batch_idx + 1}/{len(mini_batches)}]: Start training MicroBatch[{micro_batch_idx + 1}/{len(micro_batches)}]")
+                        micro_batch_start_time = time.perf_counter()
                     model_inputs = {**micro_batch.batch, **micro_batch.non_tensor_batch}
-                    # responses = model_inputs["responses"]
-                    # response_length = responses.size(1)
-                    # attention_mask = model_inputs["attention_mask"]
-                    # response_mask = attention_mask[:, -response_length:]
                     response_mask = model_inputs["response_mask"]
                     old_log_probs = model_inputs["old_log_probs"]
                     advantages = model_inputs["advantages"]
+                    compact_response_mask = model_inputs["compact_response_mask"]
 
                     # all return: (bsz, response_length)
                     log_probs = self._forward_micro_batch(model_inputs, temperature=temperature)
@@ -271,7 +300,8 @@ class DataParallelPPOActor(BasePPOActor):
                         old_log_probs=old_log_probs,
                         log_probs=log_probs,
                         advantages=advantages,
-                        response_mask=response_mask,
+                        # response_mask=response_mask,
+                        response_mask=compact_response_mask,
                         clip_ratio_low=self.config.clip_ratio_low,
                         clip_ratio_high=self.config.clip_ratio_high,
                         clip_ratio_dual=self.config.clip_ratio_dual,
@@ -301,8 +331,19 @@ class DataParallelPPOActor(BasePPOActor):
                         "actor/ppo_kl": pg_metrics["ppo_kl"],
                     }
                     append_to_dict(metrics, batch_metrics)
+                    if self.rank == 0:
+                        micro_batch_end_time = time.perf_counter()
+                        logger.info(
+                            f"Finished micro_batches [{micro_batch_idx + 1}/{len(micro_batches)}] in {(micro_batch_end_time - micro_batch_start_time):.2f} seconds"
+                        )
 
                 grad_norm = self._optimizer_step()
                 append_to_dict(metrics, {"actor/grad_norm": grad_norm.detach().item()})
+
+                if self.rank == 0:
+                    mini_batch_end_time = time.perf_counter()
+                    logger.info(
+                        f"RANK-0 Finished mini_batches [{mini_batch_idx + 1}/{len(mini_batches)}] in {(mini_batch_end_time - mini_batch_start_time):.2f} seconds"
+                    )
 
         return metrics
