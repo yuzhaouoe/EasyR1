@@ -53,11 +53,14 @@ def upload_model_to_huggingface(local_path: str, remote_path: str):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--local_dir", required=True, type=str, help="The path for your saved model")
+    parser.add_argument("--local_dir", default=None, required=False, type=str, help="The path for your saved model")
     parser.add_argument("--hf_upload_path", default=False, type=str, help="The path of the huggingface repo to upload")
     args = parser.parse_args()
-    local_dir: str = args.local_dir
 
+    args.local_dir = "/home/t-yzha/projects/cursor-moving/aml/actor"
+
+    local_dir: str = args.local_dir
+    
     assert not local_dir.endswith("huggingface"), "The local_dir should not end with huggingface."
 
     # copy rank zero to find the shape of (dp, fsdp)
@@ -125,7 +128,8 @@ if __name__ == "__main__":
                 print(f"Cannot find key {key} in rank {rank}.")
 
             if isinstance(tensor, DTensor):
-                state_dict[key].append(tensor._local_tensor.bfloat16())
+                # state_dict[key].append(tensor._local_tensor.bfloat16())
+                state_dict[key].append(tensor._local_tensor)
                 placements = tuple(tensor.placements)
                 # replicated placement at ddp dimension can be discarded
                 if mesh_dim_names[0] == "ddp":
@@ -136,7 +140,8 @@ if __name__ == "__main__":
                 else:
                     assert param_placements[key] == placements
             else:
-                state_dict[key].append(tensor.bfloat16())
+                # state_dict[key].append(tensor.bfloat16())
+                state_dict[key].append(tensor)
 
     del model_state_dict_lst
 
@@ -173,14 +178,23 @@ if __name__ == "__main__":
     else:
         raise NotImplementedError(f"Unknown architecture {architectures}.")
 
-    with torch.device("meta"):
-        model: PreTrainedModel = AutoClass.from_config(config, torch_dtype=torch.bfloat16)
+    # with torch.device("meta"):
+    #     model: PreTrainedModel = AutoClass.from_config(config, torch_dtype=torch.bfloat16)
 
-    assert isinstance(model, PreTrainedModel)
-    model.to_empty(device="cpu")
+    # assert isinstance(model, PreTrainedModel)
+    # model.to_empty(device="cpu")
+
+    from transformers import Qwen2_5_VLForConditionalGeneration
+
+    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+        "/home/t-yzha/projects/models/Qwen2.5-VL-7B-Instruct",
+        torch_dtype=torch.float32,
+    )
+    model.load_state_dict(state_dict, strict=True)
 
     print(f"Saving model to {hf_path}...")
-    model.save_pretrained(hf_path, state_dict=state_dict)
+    # model.save_pretrained(hf_path, state_dict=state_dict)
+    model.save_pretrained(hf_path)
     del state_dict, model
 
     if args.hf_upload_path:

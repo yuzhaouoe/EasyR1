@@ -141,6 +141,7 @@ class TrainerConfig:
     """save checkpoint path, if not specified, use `checkpoints/project_name/experiment_name`"""
     load_checkpoint_path: Optional[str] = None
     """load checkpoint path"""
+    load_checkpoint_step: int = 0
 
     def post_init(self):
         if self.save_checkpoint_path is None:
@@ -150,6 +151,10 @@ class TrainerConfig:
         if self.load_checkpoint_path is not None:
             if os.path.exists(self.load_checkpoint_path):  # ray job uses absolute path
                 self.load_checkpoint_path = os.path.abspath(self.load_checkpoint_path)
+                if "global_step_" not in self.load_checkpoint_path:
+                    self.load_checkpoint_path = os.path.join(
+                        self.load_checkpoint_path, f"global_step_{self.load_checkpoint_step}"
+                    )
             else:
                 print(f"Model checkpoint {self.load_checkpoint_path} not found.")
                 self.load_checkpoint_path = None

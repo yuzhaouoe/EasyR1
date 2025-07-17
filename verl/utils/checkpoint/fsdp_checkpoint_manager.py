@@ -22,11 +22,14 @@ from torch.distributed.checkpoint.state_dict import (
     get_model_state_dict,
     get_state_dict,
     set_state_dict,
+    set_model_state_dict,
+    set_optimizer_state_dict,
 )
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from transformers import PreTrainedModel, PreTrainedTokenizer, ProcessorMixin
 
 from .checkpoint_manager import BaseCheckpointManager
+from torch.distributed.fsdp.api import StateDictType
 
 
 class FSDPCheckpointManager(BaseCheckpointManager):
@@ -61,26 +64,36 @@ class FSDPCheckpointManager(BaseCheckpointManager):
         model_path = os.path.join(path, f"model_world_size_{self.world_size}_rank_{self.rank}.pt")
         optim_path = os.path.join(path, f"optim_world_size_{self.world_size}_rank_{self.rank}.pt")
         extra_path = os.path.join(path, f"extra_state_world_size_{self.world_size}_rank_{self.rank}.pt")
-        print(f"[rank-{self.rank}]: Loading model from {os.path.abspath(model_path)}.")
-        print(f"[rank-{self.rank}]: Loading optimizer from {os.path.abspath(optim_path)}.")
-        print(f"[rank-{self.rank}]: Loading extra_state from {os.path.abspath(extra_path)}.")
-        model_state_dict = torch.load(model_path, weights_only=False)
-        optim_state_dict = torch.load(optim_path, weights_only=False)
-        extra_state_dict = torch.load(extra_path, weights_only=False)
-
         state_dict_options = StateDictOptions(cpu_offload=True)
-        set_state_dict(
-            model=self.model,
-            optimizers=self.optimizer,
-            model_state_dict=model_state_dict,
-            optim_state_dict=optim_state_dict,
-            options=state_dict_options,
-        )
-        self.lr_scheduler.load_state_dict(extra_state_dict["lr_scheduler"])
+        if not os.path.exists(optim_path):
+            print("[rank-{self.rank}]: Optimizer checkpoint not found, skipping optimizer and extra_state loading.")
+            print(f"[rank-{self.rank}]: Loading model from {os.path.abspath(model_path)}.")
+            model_state_dict = torch.load(model_path, weights_only=False)
+            set_model_state_dict(
+                model=self.model,
+                model_state_dict=model_state_dict,
+                options=state_dict_options,
+            )
+        else:
+            print(f"[rank-{self.rank}]: Loading optimizer from {os.path.abspath(optim_path)}.")
+            print(f"[rank-{self.rank}]: Loading model from {os.path.abspath(model_path)}.")
+            print(f"[rank-{self.rank}]: Loading extra_state from {os.path.abspath(extra_path)}.")
+            optim_state_dict = torch.load(optim_path, weights_only=False)
+            extra_state_dict = torch.load(extra_path, weights_only=False)
+            model_state_dict = torch.load(model_path, weights_only=False)
 
-        # recover random state
-        if "rng" in extra_state_dict:
-            self.load_rng_state(extra_state_dict["rng"])
+            set_state_dict(
+                model=self.model,
+                optimizers=self.optimizer,
+                model_state_dict=model_state_dict,
+                optim_state_dict=optim_state_dict,
+                options=state_dict_options,
+            )
+            self.lr_scheduler.load_state_dict(extra_state_dict["lr_scheduler"])
+
+            # recover random state
+            if "rng" in extra_state_dict:
+                self.load_rng_state(extra_state_dict["rng"])
 
     def save_checkpoint(self, path: str, save_model_only: bool = False):
         path = self.local_mkdir(path)
@@ -120,4 +133,20 @@ class FSDPCheckpointManager(BaseCheckpointManager):
             self.model._fsdp_wrapped_module.generation_config.save_pretrained(hf_path)
             self.processing_class.save_pretrained(hf_path)
 
+        dist.barrier()
+
+        print("try to save merged model to huggingface format...")
+        try:
+            # 1. Get the consolidated state_dict from the FSDP WRAPPER
+            with FSDP.state_dict_type(self.model, StateDictType.FULL_STATE_DICT):
+                cpu_state_dict = self.model.state_dict()
+            # 2. On rank 0, pass this state_dict to the UNDERLYING module's save function
+            if self.rank == 0:
+                os.makedirs(os.path.join(path, "merged_model"), exist_ok=True)
+                self.model._fsdp_wrapped_module.save_pretrained(
+                    os.path.join(path, "merged_model"), state_dict=cpu_state_dict
+                )
+        except Exception as e:
+            print(f"Failed to save merged model: {e}")
+            print("Skipping saving merged model to huggingface format.")
         dist.barrier()
