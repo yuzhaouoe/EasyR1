@@ -39,6 +39,9 @@ class RolloutConfig:
     disable_log_stats: bool = True
     disable_tqdm: bool = False
     val_override_config: Dict[str, Any] = field(default_factory=dict)
+    
+    upsample_second_step: bool = False
+        
     # below are auto keys
     prompt_length: int = field(default=-1, init=False)
     response_length: int = field(default=-1, init=False)

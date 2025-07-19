@@ -125,15 +125,14 @@ class FSDPCheckpointManager(BaseCheckpointManager):
         # wait for everyone to dump to local
         dist.barrier()
 
-        if self.rank == 0:
-            hf_path = os.path.join(path, "huggingface")
-            os.makedirs(hf_path, exist_ok=True)
-            assert isinstance(self.model._fsdp_wrapped_module, PreTrainedModel)
-            self.model._fsdp_wrapped_module.config.save_pretrained(hf_path)
-            self.model._fsdp_wrapped_module.generation_config.save_pretrained(hf_path)
-            self.processing_class.save_pretrained(hf_path)
-
-        dist.barrier()
+        # if self.rank == 0:
+        #     hf_path = os.path.join(path, "huggingface")
+        #     os.makedirs(hf_path, exist_ok=True)
+        #     assert isinstance(self.model._fsdp_wrapped_module, PreTrainedModel)
+        #     self.model._fsdp_wrapped_module.config.save_pretrained(hf_path)
+        #     self.model._fsdp_wrapped_module.generation_config.save_pretrained(hf_path)
+        #     self.processing_class.save_pretrained(hf_path)
+        # dist.barrier()
 
         print("try to save merged model to huggingface format...")
         try:
@@ -142,10 +141,14 @@ class FSDPCheckpointManager(BaseCheckpointManager):
                 cpu_state_dict = self.model.state_dict()
             # 2. On rank 0, pass this state_dict to the UNDERLYING module's save function
             if self.rank == 0:
-                os.makedirs(os.path.join(path, "merged_model"), exist_ok=True)
-                self.model._fsdp_wrapped_module.save_pretrained(
-                    os.path.join(path, "merged_model"), state_dict=cpu_state_dict
-                )
+                merged_model_path = os.path.join(path, "merged_model")
+                os.makedirs(merged_model_path, exist_ok=True)
+                self.model._fsdp_wrapped_module.save_pretrained(merged_model_path, state_dict=cpu_state_dict)
+                assert isinstance(self.model._fsdp_wrapped_module, PreTrainedModel)
+                self.model._fsdp_wrapped_module.config.save_pretrained(merged_model_path)
+                self.model._fsdp_wrapped_module.generation_config.save_pretrained(merged_model_path)
+                self.processing_class.save_pretrained(merged_model_path)
+
         except Exception as e:
             print(f"Failed to save merged model: {e}")
             print("Skipping saving merged model to huggingface format.")
