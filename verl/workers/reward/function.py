@@ -67,6 +67,7 @@ class FunctionRewardManager(ABC):
 
         reward_fn = getattr(module, config.reward_function_name)
         print(f"Using reward function `{config.reward_function_name}` from `{config.reward_function}`.")
+        print(f"reward_function_kwargs: {config.reward_function_kwargs}")
         self.reward_fn = partial(reward_fn, **config.reward_function_kwargs)
         self.config = config
         self.tokenizer = tokenizer
