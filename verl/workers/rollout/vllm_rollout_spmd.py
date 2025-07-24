@@ -44,7 +44,11 @@ def _get_logit_bias(processor: Optional[ProcessorMixin]) -> Optional[Dict[int, f
     # TODO: add video token
     if processor is not None and hasattr(processor, "image_token"):
         image_token_id = processor.tokenizer.convert_tokens_to_ids(processor.image_token)
-        return {image_token_id: -100}
+        bad_token = processor.tokenizer.encode(' addCriterion')
+        if len(bad_token) == 1:
+            return {image_token_id: -100, bad_token[0]: -100}
+        else:
+            return {image_token_id: -100}
     else:
         return None
 
